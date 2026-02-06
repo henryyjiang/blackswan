@@ -8,3 +8,13 @@
 - Hill's tail index (and other tail fatness estimators)
 - RV/IV ratio
 - Simple multifractal spectrum width
+- 
+6. Behaviors documented in technical_features.ipynb:
+- RSI
+- Bollinger Band %B
+- ATR
+- Volume Ratio
+- VWAP Deviation
+- Put/Call Ratio
+- IV Skew
+- Term Structure Slope
