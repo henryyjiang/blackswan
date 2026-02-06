@@ -1,3 +1,5 @@
+This repository contains demo notebooks for the equations used in the model. 
+
 ### How to Run
 1. Log into QuantConnect and create a new project.
 2. In the left hand sidebar, click the upload icon and import the .ipynb files.
