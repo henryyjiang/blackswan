@@ -7,4 +7,4 @@
 - Hurst exponent (with DFA)
 - Hill's tail index (and other tail fatness estimators)
 - RV/IV ratio
-- Simple Multifractal Spectral Width
+- Simple multifractal spectrum width
