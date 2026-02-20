@@ -1,8 +1,6 @@
 # Mandelbrotian Vol-Clustering Options Strategy
 
-A QuantConnect algorithm that trades short-term swing opportunities in large-cap US tech equities by conditioning classic technical signals on a fractal and tail-risk regime model.
-
-> **Platform:** [QuantConnect](https://www.quantconnect.com/strategies/315/Mandelbrotian-Vol-Clustering-Options-Strat) · **Language:** Python · **Asset Class:** US Equity Options
+> **Strategy Link:** [QuantConnect](https://www.quantconnect.com/strategies/315/Mandelbrotian-Vol-Clustering-Options-Strat)
 
 ---
 
@@ -68,30 +66,55 @@ AAPL · AMZN · GOOGL · META · MSFT · NVDA · TSLA
 
 ## How It Works
 
-### 1 · Regime Detection
-Each day the algorithm computes fractal and statistical features for every underlying:
-- **Hurst exponent** (multi-horizon) — distinguishes trending vs mean-reverting dynamics
-- **Tail index** — captures extreme-return risk
-- **Multifractal width** — measures complexity of the return process
-- **Realized volatility** vs **implied volatility** — identifies volatility mispricing
-- Standard technicals: RSI, Bollinger %B, MACD, MA trend, volume profile, VWAP deviation
+### 1 · Feature Computation (`utils.py`)
+Each day, 260 bars of daily OHLCV data per ticker feed a feature pipeline that produces both fractal and classical technical indicators:
 
-These features map each ticker to a regime: trending up (0), trending down (1), mean-reverting (2), elevated risk, or crisis.
+- **Multi-horizon Hurst exponents** — DFA-based estimates over 20-, 60-, and 120-day windows of log returns, plus a short−long divergence term. Values above ≈0.52 suggest persistence; below ≈0.45, anti-persistence.
+- **Tail index** — a blended Hill / Dekkers-Einmahl-de Haan estimator swept across multiple order-statistic thresholds (5–25% of the distribution). Low values (< 2) flag heavy tails and elevated crash risk.
+- **Multifractal width** — the spread between generalized Hurst exponents at q = 0.5 and q = 3 from a multifractal DFA. Wider spectra indicate richer volatility clustering.
+- **Realized vol & vol-of-vol** — 20-day annualized standard deviation of log returns and the dispersion of rolling sub-window volatilities.
+- **IV / RV ratio** — median implied volatility from near-ATM options (within 3% moneyness, 14–45 DTE) divided by realized vol, serving as a volatility mispricing proxy.
+- **Technicals** — 14-period RSI, 20-period Bollinger %B, normalized ATR, MACD (12/26/9), 20- and 50-day SMA trend, volume ratio, and VWAP deviation.
 
-### 2 · Signal Generation
-Signals are generated only when the regime is **not** in crisis. The strategy looks for:
-- **Trend continuation** — pullback entries in a confirmed uptrend
-- **Downtrend continuation** — short-biased entries in a confirmed downtrend
-- **Mean-reversion buy/sell** — entries when a mean-reverting regime shows overextension
+### 2 · Regime Classification (`classify_regime`)
+A composite **danger score** is computed as a weighted sum of normalized realized-vol, tail-index, multifractal-width, and 20-day drawdown scores (weights 0.35 / 0.15 / 0.20 / 0.25), with hard overrides when the tail index drops below 1.8 alongside wide multifractal spectra or extreme volatility. The regime mapping is:
 
-Signal strength is scaled by fractal confidence and the implied/realized volatility ratio.
+| Regime | Code | Condition |
+|---|---|---|
+| **Crisis** | 4 | danger ≥ 0.7, or tail < 1.8 with MF width > 0.4 |
+| **Elevated risk** | 3 | danger ≥ 0.5 |
+| **Mean-reverting** | 2 | H_med < 0.48 or H_short < 0.45 (anti-persistent fractal signature) |
+| **Trending up** | 0 | Persistent Hurst + positive 20-day return and/or price above SMA-50 |
+| **Trending down** | 1 | Persistent Hurst + negative 20-day return and/or price below SMA-50 |
 
-### 3 · Execution & Risk Management
-Trades are expressed through near-ATM options. Exits are governed by:
-- **Take-profit** and **stop-loss** thresholds
-- **Expiry-near** management to avoid theta decay
-- **Elevated-risk stops** when the regime shifts toward stress
-- **Crisis exits** for rapid de-risking
+### 3 · Signal Generation (`generate_signal`)
+No signals fire in crisis (regime 4). In other regimes, the strategy looks for specific technical setups whose strength is multiplicatively scaled by three modifiers — **fractal confidence** (distance of H_med from the persistence/anti-persistence threshold), **tail mispricing** (inverse tail index, capped), and **IV/RV adjustment** (bonus when implied vol is cheap relative to realized):
+
+- **Regime 0 — Trend pullback buy:** RSI < 40, 5-day return < −2%, BB %B < 0.5, MACD histogram not deeply negative, price above SMA-50.
+- **Regime 0 — Trend continuation:** 5-day return > +2%, RSI 52–70, MACD positive, BB %B in the 0.5–0.9 band, price above SMA-50.
+- **Regime 1 — Downtrend continuation:** 5-day return < −2%, RSI 30–48, MACD negative, BB %B 0.1–0.5, price below SMA-50, plus tail < 2.8 and MF width > 0.18.
+- **Regime 2 — Mean-reversion buy:** RSI < 35, BB %B < 0.25, drawdown not extreme, no large single-day crash.
+- **Regime 2 — Mean-reversion sell:** RSI > 65, BB %B > 0.95, price below SMA-50.
+
+Candidates are ranked by composite strength and the top two per day are sent to execution, subject to a five-position cap.
+
+### 4 · Execution & Risk Management
+Trades are expressed through **near-ATM options** (calls for long signals, puts for short) with 21–45 DTE and moneyness within ±5%. Position size is scaled by signal strength and further adjusted by tail index, ATR, and danger score, capping at 20% of portfolio per position. Idle capital is parked in QQQ.
+
+Exits follow a layered rule set evaluated daily:
+
+| Exit | Trigger |
+|---|---|
+| **Stop loss** | Option PnL < −40% |
+| **Take profit** | Option PnL > +500% |
+| **Expiry near** | ≤ 5 DTE remaining |
+| **Time exit** | ≥ 20 days held and PnL ≤ +10% |
+| **Crisis exit** | Regime jumps to 4, held ≥ 2 days, PnL negative |
+| **Elevated stop** | Regime ≥ 3, PnL < −15%, held ≥ 3 days |
+| **Signal reversal** | Current signal direction flips, held ≥ 5 days |
+
+### 5 · Optional ML Trade Filter (`ml_filter.py`)
+An XGBoost classifier can be toggled on (`use_ml = True`) to gate entries. It trains on the same 27-dimensional feature vector used for regime detection, labelling each closed trade as win (PnL > 0) or loss. The model retrains every 20 closed trades once 30+ samples are available, using cross-validated accuracy to monitor fit. Trades with predicted win probability below 0.45 are blocked. In the current backtest the ML filter is **disabled** — all signals that pass the regime and strength filters are executed.
 
 ---
 
